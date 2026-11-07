@@ -13,6 +13,9 @@ import {
   formatClock,
   formatDuration
 } from "../src/core/format.js";
+import { parseLine } from "../src/core/parser.js";
+import { detectFormat } from "../src/core/detect.js";
+import { createAccumulator } from "../src/core/accumulator.js";
 import { createTimelineChart, createDonutChart, createColumnChart } from "./charts.js";
 
 const NS = "http://www.w3.org/2000/svg";
@@ -175,21 +178,26 @@ function updateProgressBar(bytesRead, totalBytes) {
   setProgress(bytesRead / totalBytes, state.lines);
 }
 
-function showError(message) {
-  el("loading").classList.add("hidden");
-  el("hero").classList.remove("hidden");
+function notify(title, message, timeout = 9000) {
   const box = document.createElement("div");
   box.className = "toast";
   replaceKids(box, [
-    h("strong", { text: "没能完成解析" }),
+    h("strong", { text: title }),
     h("span", { text: message }),
     h("button", { class: "btn btn-sm btn-ghost", type: "button", onclick: () => box.remove() }, ["关闭"])
   ]);
   document.body.appendChild(box);
-  setTimeout(() => box.remove(), 9000);
+  setTimeout(() => box.remove(), timeout);
+  return box;
 }
 
-async function streamFile(file, worker) {
+function showError(message) {
+  el("loading").classList.add("hidden");
+  el("hero").classList.remove("hidden");
+  notify("没能完成解析", message);
+}
+
+async function streamFile(file, sink) {
   let stream = file.stream();
   if (/\.gz$/i.test(file.name) && typeof DecompressionStream !== "undefined") {
     try {
@@ -218,7 +226,7 @@ async function streamFile(file, worker) {
       carry = carry.slice(index + 1);
       batch.push(line);
       if (batch.length >= CHUNK_LINES) {
-        worker.postMessage({ type: "chunk", lines: batch });
+        sink.chunk(batch);
         batch = [];
       }
       index = carry.indexOf("\n");
@@ -233,11 +241,83 @@ async function streamFile(file, worker) {
 
   carry += decoder.decode();
   if (carry.length) batch.push(carry.replace(/\r$/, ""));
-  if (batch.length) worker.postMessage({ type: "chunk", lines: batch });
+  if (batch.length) sink.chunk(batch);
 }
 
-async function analyzeFile(file, options = {}) {
-  if (state.running) return;
+/** Worker 在 file:// 下会被浏览器拒绝，这里先判断能不能用；?noworker=1 可以验证主线程兜底 */
+function canUseWorker() {
+  if (typeof Worker === "undefined" || location.protocol === "file:") return false;
+  return !new URLSearchParams(location.search).has("noworker");
+}
+
+/**
+ * 主线程解析器：与 src/worker/parse.worker.js 同一套 core 模块，
+ * 接口对齐成 { chunk(lines), finish() } —— 读文件的 streamFile 不关心算力在哪。
+ */
+function createLocalEngine(handlers) {
+  let format = "auto";
+  let detected = null;
+  const accumulator = createAccumulator({});
+  const badSamples = [];
+  let parsed = 0;
+  let failed = 0;
+  let seen = 0;
+  let sample = [];
+  const startedAt = Date.now();
+
+  function detect(lines) {
+    const probe = [];
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      probe.push(line);
+      if (probe.length >= 20) break;
+    }
+    if (!probe.length) return;
+    detected = detectFormat(probe);
+    if (detected.format !== "unknown") format = detected.format;
+  }
+
+  return {
+    chunk(lines) {
+      if (!detected) detect(lines);
+      for (const line of lines) {
+        if (!line || !line.trim()) continue;
+        seen += 1;
+        const result = parseLine(line, format);
+        if (result.ok) {
+          parsed += 1;
+          accumulator.add(result.entry);
+          if (sample.length < SAMPLE_LIMIT) sample.push(result.entry);
+        } else {
+          failed += 1;
+          if (badSamples.length < 50) {
+            badSamples.push({ lineNo: seen, text: line.slice(0, 300), reason: result.reason });
+          }
+        }
+      }
+      if (sample.length) {
+        handlers.sample(sample);
+        sample = [];
+      }
+      handlers.progress(seen, parsed, failed);
+    },
+    finish() {
+      handlers.done({
+        stats: accumulator.finish(),
+        bad: badSamples,
+        parsed,
+        failed,
+        lines: seen,
+        format: detected ? detected.format : format,
+        confidence: detected ? detected.confidence : null,
+        elapsedMs: Date.now() - startedAt
+      });
+    }
+  };
+}
+
+function analyzeFile(file, options = {}) {
+  if (state.running) return Promise.resolve(false);
   state.running = true;
   state.demo = Boolean(options.demo);
   state.file = file;
@@ -254,9 +334,6 @@ async function analyzeFile(file, options = {}) {
 
   showLoading(file);
 
-  const worker = new Worker(new URL("../src/worker/parse.worker.js", import.meta.url), { type: "module" });
-  state.worker = worker;
-
   return new Promise((resolve) => {
     let finished = false;
     const settle = (ok) => {
@@ -266,38 +343,93 @@ async function analyzeFile(file, options = {}) {
       resolve(ok);
     };
 
+    const handlers = {
+      sample(entries) {
+        for (const entry of entries) {
+          if (state.sample.length < SAMPLE_LIMIT) state.sample.push(entry);
+        }
+      },
+      progress(lines, parsed, failed) {
+        state.lines = lines;
+        state.parsed = parsed;
+        state.failed = failed;
+        const lineText = el("progressLines");
+        if (lineText) lineText.textContent = formatNumber(lines) + " 行";
+      },
+      done(result) {
+        handleDone(result);
+        settle(true);
+      },
+      error(message) {
+        showError(message);
+        settle(false);
+      }
+    };
+
+    const streamInto = (engine) => {
+      streamFile(file, engine)
+        .then(() => engine.finish())
+        .catch((error) => handlers.error(error && error.message ? error.message : "读取文件失败"));
+    };
+
+    // 主线程兜底：重新从头读，之前半途的样本与统计都要清掉
+    const startLocal = (notice) => {
+      state.sample = [];
+      state.bad = [];
+      state.lines = 0;
+      state.parsed = 0;
+      state.failed = 0;
+      if (notice) notify("改为单线程解析", notice, 12000);
+      streamInto(createLocalEngine(handlers));
+    };
+
+    if (!canUseWorker()) {
+      startLocal("浏览器不允许 file:// 页面加载模块 Worker。日志仍在你本机解析，只是大文件会慢一些；用 npm start 打开本地服务器就能用上 Worker。");
+      return;
+    }
+
+    let worker = null;
+    try {
+      worker = new Worker(new URL("../src/worker/parse.worker.js", import.meta.url), { type: "module" });
+    } catch {
+      startLocal("解析线程启动失败，已经改在主线程里跑。");
+      return;
+    }
+
+    state.worker = worker;
+    let cancelled = false;
+    let workerDone = false;
+
     worker.onmessage = (event) => {
       const message = event.data;
       if (!message) return;
       if (message.type === "sample") {
-        for (const entry of message.entries) {
-          if (state.sample.length < SAMPLE_LIMIT) state.sample.push(entry);
-        }
+        handlers.sample(message.entries || []);
       } else if (message.type === "progress") {
-        state.lines = message.lines;
-        state.parsed = message.parsed;
-        state.failed = message.failed;
-        el("progressLines").textContent = formatNumber(message.lines) + " 行";
+        handlers.progress(message.lines, message.parsed, message.failed);
       } else if (message.type === "done") {
-        handleDone(message.result);
-        settle(true);
+        workerDone = true;
+        handlers.done(message.result);
       }
     };
 
-    worker.onerror = (event) => {
-      const hint = location.protocol === "file:"
-        ? "请用本地服务器打开（npm start），浏览器不允许 file:// 下加载模块 Worker。"
-        : "解析线程启动失败：" + (event.message || "未知错误");
-      showError(hint);
-      settle(false);
+    // Worker 加载失败（脚本 404、CSP 拦截等）不会走 onerror 之外的路径，这里兜底重试
+    worker.onerror = () => {
+      if (cancelled || workerDone || finished) return;
+      cancelled = true;
+      worker.terminate();
+      state.worker = null;
+      startLocal("解析线程没能启动，已经改在主线程里跑。");
     };
 
-    streamFile(file, worker)
-      .then(() => worker.postMessage({ type: "done" }))
-      .catch((error) => {
-        showError(error && error.message ? error.message : "读取文件失败");
-        settle(false);
-      });
+    streamInto({
+      chunk(lines) {
+        if (!cancelled) worker.postMessage({ type: "chunk", lines });
+      },
+      finish() {
+        if (!cancelled) worker.postMessage({ type: "done" });
+      }
+    });
   });
 }
 

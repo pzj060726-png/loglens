@@ -71,7 +71,7 @@ npm run check      # 模块导出 + 示例日志解析 + 页面资源自检
 npm run bench      # 解析基准，可加 -- --lines 500000
 ```
 
-也可以直接双击 `index.html`：除「示例日志」按钮要读 `demo/sample.log` 之外，其余功能不依赖服务器。
+页面需要在本地服务器上打开：浏览器不允许 `file://` 页面加载 ES 模块，直接双击 `index.html` 时脚本不会执行（页面会提示这一点）。`npm start` 起的静态服务器和线上版本跑的是同一份代码，解析依旧全部在浏览器本地完成。
 
 ## 支持的日志格式
 
@@ -172,6 +172,7 @@ tools/
 - 图表时间按浏览器本地时区显示；跨时区看日志时以 UTC 偏移为准
 - 需要支持 `File.stream()`、`Worker(type: "module")`、`DecompressionStream` 的浏览器（Chrome / Edge / Firefox / Safari 16.4+）
 - 单行超长的畸形日志会被当作一个坏行计数，不会导致崩溃，但也无法从中提取字段
+- Worker 起不来时（例如被 CSP 拦截）会自动退回主线程解析，结果一样，只是大文件会慢一些、期间标签页会卡
 
 ## License
 

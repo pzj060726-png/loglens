@@ -35,6 +35,14 @@
   </header>
 
   <main class="wrap">
+    <div class="file-hint" id="fileHint" hidden>
+      <strong>这个页面要在本地服务器上打开</strong>
+      <span>
+        浏览器不允许 <code>file://</code> 页面加载 ES 模块，所以双击 index.html 时脚本根本不会执行。
+        在项目目录运行 <code>npm start</code>，再打开 <code>http://127.0.0.1:4173</code>；
+        或者直接使用 <a href="https://pzj060726-png.github.io/loglens/">在线版</a>。
+      </span>
+    </div>
     <section class="hero" id="hero">
       <span class="eyebrow"><span id="eyebrowIcon"></span>零依赖 · Web Worker · 日志不出浏览器</span>
       <h1>把日志丢进浏览器<br /><em>几秒看清</em>线上发生了什么</h1>
@@ -182,6 +190,14 @@
   <noscript>
     <div style="padding:24px;text-align:center;color:#93a6c2">LogLens 需要 JavaScript 才能在本地解析日志。</div>
   </noscript>
+
+  <script>
+    // file:// 下模块脚本会被浏览器拒绝，先给出提示，免得看到一页按不动的按钮
+    if (location.protocol === "file:") {
+      var fileHint = document.getElementById("fileHint");
+      if (fileHint) fileHint.hidden = false;
+    }
+  </script>
 
   <script type="module" src="assets/app.js"></script>
 </body>
