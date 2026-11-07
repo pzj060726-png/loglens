@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>LogLens · 浏览器里的日志分析器</title>
+  <meta name="description" content="把 Nginx、Apache、JSON 格式的访问日志拖进浏览器，本地解析出请求量、状态码分布、Top 路径与延迟分位。日志不上传，零依赖纯前端。" />
+  <meta name="theme-color" content="#070d18" />
+  <meta property="og:title" content="LogLens · 浏览器里的日志分析器" />
+  <meta property="og:description" content="拖进日志文件，几秒看清请求量、错误率、Top 路径与 P95 延迟。全部在本地解析，不上传任何一行日志。" />
+  <link rel="icon" href="assets/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="assets/style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark" id="brandMark" aria-hidden="true"></span>
+        <div>
+          <div class="brand-name">LogLens</div>
+          <div class="brand-tag">浏览器里的日志分析器</div>
+        </div>
+      </div>
+      <div class="topbar-spacer"></div>
+      <div class="topbar-links">
+        <span class="pill" id="privacyPill" title="解析全部在浏览器本地完成">本地解析</span>
+        <button class="icon-btn" id="themeBtn" type="button" aria-label="切换主题">
+          <span class="icon-slot" id="themeIcon"></span><span class="label" id="themeLabel">深色</span>
+        </button>
+        <a class="icon-btn" id="repoLink" href="https://github.com/pzj060726-png/loglens" target="_blank" rel="noreferrer">
+          <span class="icon-slot" id="repoIcon"></span><span class="label">GitHub</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="hero" id="hero">
+      <span class="eyebrow"><span id="eyebrowIcon"></span>零依赖 · Web Worker · 日志不出浏览器</span>
+      <h1>把日志丢进浏览器<br /><em>几秒看清</em>线上发生了什么</h1>
+      <p class="lede">
+        支持 Nginx / Apache 组合格式与 JSON Lines，自动识别格式，边读边算：
+        请求量、错误率、状态码分布、Top 路径与 IP、P50/P95/P99 延迟，都在本地完成。
+      </p>
+
+      <div class="dropzone" id="dropzone" role="button" tabindex="0" aria-label="选择或拖入日志文件">
+        <div class="dropzone-inner">
+          <div class="dropzone-icon" id="dropIcon"></div>
+          <strong>拖入日志文件，或点击选择</strong>
+          <small>.log / .txt / .json / .gz，几十 MB 也能读，越大的文件越能看出流式解析的好处</small>
+          <div class="dropzone-actions">
+            <button class="btn btn-primary" id="pickBtn" type="button">
+              <span class="icon-slot" id="pickIcon"></span>选择日志文件
+            </button>
+            <button class="btn" id="demoBtn" type="button">
+              <span class="icon-slot" id="demoIcon"></span>用示例日志试试
+            </button>
+          </div>
+          <input type="file" id="fileInput" accept=".log,.txt,.json,.gz,text/plain,application/json" hidden />
+        </div>
+      </div>
+
+      <div class="hero-features" id="features"></div>
+      <div class="privacy-note">
+        <span class="icon-slot" id="privacyIcon"></span>
+        没有后端、没有上报、没有分析脚本：文件用 <code>File.stream()</code> 分块读，解析在 Web Worker 里跑完就丢。
+      </div>
+    </section>
+
+    <section class="loading hidden" id="loading" aria-live="polite">
+      <h2>正在解析…</h2>
+      <div class="file-name" id="loadingFile">-</div>
+      <div class="progress"><div class="progress-fill" id="progressFill"></div></div>
+      <div class="progress-meta">
+        <span id="progressText">0%</span>
+        <span id="progressLines">0 行</span>
+      </div>
+    </section>
+
+    <section class="results" id="results">
+      <div class="result-head">
+        <div class="result-title">
+          <h2 id="resultTitle">分析结果</h2>
+          <div class="result-file" id="resultFile">-</div>
+        </div>
+        <span class="pill pill-accent" id="formatPill">-</span>
+        <span class="pill" id="elapsedPill">-</span>
+        <div class="result-actions">
+          <button class="btn btn-sm" id="exportCsvBtn" type="button">导出 CSV</button>
+          <button class="btn btn-sm" id="exportJsonBtn" type="button">导出 JSON</button>
+          <button class="btn btn-sm btn-ghost" id="resetBtn" type="button">换一个文件</button>
+        </div>
+      </div>
+
+      <div class="kpi-grid" id="kpis"></div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head">
+            <h3>请求量时间轴</h3>
+            <span class="spacer"></span>
+            <span class="hint" id="timelineHint"></span>
+          </div>
+          <div class="card-body">
+            <div class="chart-holder" id="timelineChart"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>状态码分布</h3><span class="spacer"></span><span class="hint" id="statusHint"></span></div>
+          <div class="card-body">
+            <div class="donut-wrap">
+              <div id="donutChart"></div>
+              <div class="donut-legend" id="donutLegend"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h3>响应时间分布</h3><span class="spacer"></span><span class="hint">毫秒，日志里带 request_time 才有</span></div>
+          <div class="card-body">
+            <div class="chart-holder" id="latencyChart"></div>
+            <div class="hero-features" id="latencyCards" style="margin-top:12px"></div>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>状态码明细</h3><span class="spacer"></span><span class="hint" id="codesHint"></span></div>
+          <div class="card-body">
+            <div class="table-wrap"><table class="data" id="statusTable"></table></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h3>Top 路径</h3><span class="spacer"></span><span class="hint" id="pathsHint"></span></div>
+          <div class="card-body"><div class="table-wrap"><table class="data" id="pathsTable"></table></div></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>Top 客户端 IP</h3><span class="spacer"></span><span class="hint" id="ipsHint"></span></div>
+          <div class="card-body">
+            <div class="table-wrap"><table class="data" id="ipsTable"></table></div>
+            <div class="hero-features" id="methodsBox" style="justify-content:flex-start;margin-top:14px"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:14px">
+        <div class="card-head"><h3>明细样本</h3><span class="spacer"></span><span class="hint" id="sampleHint"></span></div>
+        <div class="card-body">
+          <div class="toolbar">
+            <input class="input" id="filterInput" type="search" placeholder="按路径 / IP / UA 过滤…" aria-label="过滤明细样本" />
+            <select class="input" id="statusFilter" aria-label="按状态码过滤">
+              <option value="all">全部状态</option>
+              <option value="2xx">仅 2xx</option>
+              <option value="3xx">仅 3xx</option>
+              <option value="4xx">仅 4xx</option>
+              <option value="5xx">仅 5xx</option>
+            </select>
+          </div>
+          <div class="table-wrap scroll-y"><table class="data" id="sampleTable"></table></div>
+          <div class="sample-note" id="sampleNote"></div>
+        </div>
+      </div>
+
+      <div class="card hidden" id="badCard" style="margin-top:14px">
+        <div class="card-head"><h3>无法解析的行</h3><span class="spacer"></span><span class="hint" id="badHint"></span></div>
+        <div class="card-body"><div class="bad-list" id="badList"></div></div>
+      </div>
+    </section>
+
+    <footer class="site-footer">
+      <span>LogLens · 纯前端日志分析器</span>
+      <span class="spacer"></span>
+      <a href="https://github.com/pzj060726-png/loglens" target="_blank" rel="noreferrer">GitHub 仓库</a>
+      <span>·</span>
+      <span>MIT License</span>
+    </footer>
+  </main>
+
+  <noscript>
+    <div style="padding:24px;text-align:center;color:#93a6c2">LogLens 需要 JavaScript 才能在本地解析日志。</div>
+  </noscript>
+
+  <script type="module" src="assets/app.js"></script>
+</body>
+</html>

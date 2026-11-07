@@ -1,0 +1,48 @@
+{
+  "name": "loglens",
+  "version": "0.1.0",
+  "private": true,
+  "description": "浏览器里的日志分析器：Nginx / Apache / JSON 日志本地解析、聚合、可视化，日志不上传",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "author": "pzj060726-png",
+  "license": "MIT",
+  "homepage": "https://pzj060726-png.github.io/loglens/",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pzj060726-png/loglens.git"
+  },
+  "bugs": {
+    "url": "https://github.com/pzj060726-png/loglens/issues"
+  },
+  "keywords": [
+    "logs",
+    "nginx",
+    "apache",
+    "log-analysis",
+    "devtools",
+    "ops",
+    "privacy",
+    "vanilla-js",
+    "github-pages"
+  ],
+  "scripts": {
+    "start": "node tools/serve.mjs",
+    "preview": "node tools/serve.mjs 4180",
+    "test": "node --test",
+    "test:watch": "node --test --watch",
+    "check": "node tools/check.mjs",
+    "gen:demo": "node tools/gen-log.mjs --out demo/sample.log --lines 5000 --seed 7",
+    "bench": "node tools/bench.mjs"
+  },
+  "files": [
+    "index.html",
+    "assets",
+    "src",
+    "demo",
+    "LICENSE",
+    "README.md"
+  ]
+}
